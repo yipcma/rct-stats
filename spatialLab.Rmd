@@ -1,0 +1,234 @@
+---
+title: "Spatial Methods Lab"
+author: "Andrew Yip"
+date: "07/24/2015"
+output: html_document
+---
+
+# CO data demo
+
+```{r setup}
+# fields is maintained by Nychka, apply patch
+
+source("all.R")
+
+library(fields)
+
+# setup data
+data(COmonthlyMet)
+
+x<- CO.loc
+y<- CO.tmin.MAM.climate
+elev<- CO.elev
+good<- !is.na( y)
+x<- x[good,]
+y<- y[good]
+elev<- elev[good]
+
+# interpolate elevations to a useful a grid (will use these later)
+NGRID <- 50
+COGrid<- fields.x.to.grid( x, nx=NGRID, ny=NGRID)
+names(COGrid)<- c("x","y")
+
+data( RMelevation) # elevations for the Rocky mountain area.
+elevGrid<- interp.surface.grid( RMelevation, COGrid )
+```
+
+```{r CO data}
+quilt.plot(x, y)
+US(add = T)
+title("CO MAM average minimum temperatures")
+```
+
+```{r CO elevatiion}
+fields.style()
+plot(elev, y, xlab = "elevation", ylab = "MAM minimum (C) ")
+```
+
+```{r lm fit}
+X <- cbind( x, elev)
+lmObj<- lm( y ~ lon + lat + elev, data=X )
+summary( lmObj)
+```
+
+```{r check residuals}
+quilt.plot(x, lmObj$residuals)
+US( add=TRUE, col="grey", lwd=2)
+```
+
+```{r variogram of residuals}
+look<- vgram( x, lmObj$residuals, N=30)
+bplot.xy( look$d, look$vgram, breaks= look$breaks,
+          outline=FALSE, ylim=c(0,5),
+          xlab="distance", ylab="variogram")
+points( look$centers, look$stats[2,], col="blue")
+```
+
+```{r lazyfit}
+fit1 <- spatialProcess(x, y)
+print(fit1)
+```
+
+```{r diagnostic plot}
+set.panel(2,2)
+plot(fit1)
+```
+
+```{r surface plot}
+# note elevation not included, so the prediction is smooth
+set.panel(1,1)
+surface(fit1)
+US(add = T)
+```
+
+```{r add elevation}
+fit1E <- spatialProcess(x, y, Z = elev, ngrid = 20)
+# explicit steps (surface includes predictSurface and image.plot)
+# evaluate surface on same grid as elevations
+surFull <- predictSurface(fit1E, grid.list = COGrid, ZGrid = elevGrid)
+surSmooth <- predictSurface(fit1E, grid.list = COGrid, drop.Z = T)
+```
+
+```{r full estimate}
+# now we can make gridded data ourselves YEAH
+
+set.panel( 1,2)
+## plot window will lay out plots in a 1 by 2 matrix
+par( mar=c(1,1,1,4))
+image.plot( surFull, col=terrain.colors(256),
+            axes=FALSE,xlab="", ylab="")
+US(add=TRUE, col="grey")
+image.plot( surSmooth, col=two.colors(256),
+            axes=FALSE,xlab="", ylab="")
+US(add=TRUE, col="grey")
+```
+
+```{r ensemble for uncertainty}
+# unroll the grids in locations and vectors
+COGridPoints<- make.surface.grid( COGrid)
+COGridElevations<- c(elevGrid$z)
+SEout<- sim.Krig(fit1E, xp=COGridPoints, Z= COGridElevations, M= 10, drop.Z=TRUE)
+
+set.panel( 3,3)
+ctab<- rainbow( 256)
+image.plot( surSmooth, zlim=c(3.5,14.5), col=ctab)
+US(add=TRUE)
+par( mar=c(3,3,1,1))
+title("Best estimate", adj=0)
+for( k in 1:8){
+  image( as.surface( COGridPoints, SEout[k,], ), zlim =c(3.5,14.5), axes=FALSE, col=ctab)
+  US(add=TRUE)
+  title( paste(k), adj=0)
+  }
+```
+
+# next: can do downscaling and estimate uncertainty by ensemble on RCM output
+
+# Exercise 1: North America rainfall
+
+The NorthAmercianRainfall dataset is a high quality station data set that has the mean summer (JJA) precipitation for 1950-2010. NorthAmericanRainfall$precip is the rainfall in (mm) ( divide by 254 for inches). For the US Midwest estimate where the summer rainfall drops to around 2286 mm (e.g. find the contour line.) This threshold ( 9 inches) marks the change from regular crops and dry land farming. Try anything simple first and then try fitting a spatial process.
+
+```{r Ex1 loading}
+data(NorthAmericanRainfall)
+
+# focus on midwest
+x<- cbind( NorthAmericanRainfall$longitude, NorthAmericanRainfall$latitude)
+y<- NorthAmericanRainfall$precip
+y<- y/254
+
+# select out the subset of locations from reat Plains
+ind <- (x[,1] <= -90)& (x[,1]>= -103) & (x[,2] >= 32) & (x[,2] <= 47)
+x<- x[ind,]
+y<- y[ind]
+
+set.panel(1,1)
+
+quilt.plot( x, y)
+US( add=TRUE)
+```
+
+```{r Ex1 spatialProcess}
+narsub <- spatialProcess(x, y)
+# print(test)
+# set.panel(2,2)
+# plot(test)
+set.panel(1,1)
+surface(narsub, levels = 9)
+```
+
+# Exercise 2: Downscaling gridded data
+
+The R file WRFSpring.rda has the average spring temperatures ( MAM) for the Rocky Mountain subregion based on the WRFClimate experiment. "meanMAM" "WRFelev" "WRFGrid" "WRFLoc" are the temperatures, elevations, locations, and the lon/lat grid. Fit a spatial model to these locations and try predicting onto a finer grid. See also the function fastTps (set theta to be 3.0) for a fast spatial interpolator.
+
+```{r Ex2 loading}
+load("WRFSpring.rda")
+
+image.plot(as.surface(WRFLoc, meanMAM))
+US(add =T)
+```
+
+```{r Ex2 downscaling}
+# need a finer resolution grid of elev to make sense to include elev in Z for fastTps
+test <- fastTps(WRFLoc, meanMAM, theta = 3)
+surface(test)
+surface(test, nx = 10, ny = 10)
+surface(test, nx = 100, ny = 100)
+result <- predictSurface(test, nx = 1000, ny = 1000)
+
+```
+
+# Exercise 3: Variograms for WRF simulations
+
+The WRFTempDaily is an R daily data set that is a subset of the WRFClimate simulation for the first year and over the Rocky Mountains. tDaily is an array that has dimensions lon, lat and time (1:365)
+
+- How does the spatial dependence vary over the year? 
+- How about over space?
+
+To find variograms for these gridded data try the more efficient
+vgram.matrix function but do not set the "R" argument too large!
+
+
+```{r Ex3 loading}
+load("WRFTempDaily.rda")
+# plot for the 10th day
+data10<- tDaily[,,10]
+image.plot( lon,lat, data10 )
+US(add=TRUE)
+```
+
+1. How does the spatial dependence vary over the year? 
+
+```{r Ex3.1}
+vg.lst <- apply(tDaily, 3, vgram.matrix)
+vg.full <- sapply(vg.lst, function(x) x$vgram.full)
+
+# TODO
+# Doug's script
+dim( vg.full)
+look<- t( vg.full)
+matplot( look, type="p", pch=16, col=2)
+x11()
+matplot( look, type="p", pch=16, col=2)
+matplot( look, type="l", pch=16, col=2)
+bplot( look)
+svd( look)$d
+svd( look)-> hold
+plot( hold$v[,1:3])
+matplot( hold$v[,1:3])
+matplot( hold$v[,1:3], type="l")
+plot( hold$u[,1])
+matplot( -hold$v[,1:3], type="l")
+plot( hold$u[,1])
+matplot( -hold$v[,1:3], type="l")
+svd( look[,1:10])-> hold
+matplot( -hold$v[,1:3], type="l")
+plot( hold$u[,1])
+i1<- which.min(hold$u[,1])
+i1
+image.plot( tDaily[,,i2])
+image.plot( tDaily[,,i1])
+set.panel(3,3 )
+for( k in 1: 9){image.plot( tDaily[,,i1-1+k])}
+
+
+```
